@@ -9,7 +9,6 @@ var filenamify = require('filenamify');
 var got = require('got');
 var isUrl = require('is-url');
 var objectAssign = require('object-assign');
-var readAllStream = require('read-all-stream');
 var rename = require('gulp-rename');
 var streamCombiner = require('stream-combiner2');
 var PassThrough = require('readable-stream/passthrough');
@@ -118,26 +117,31 @@ Download.prototype.run = function (cb) {
 			return;
 		}
 
+		var hasHttpError = false;
+
 		var protocol = url.parse(get.url).protocol;
 		if (protocol) {
 			protocol = protocol.slice(0, -1);
 		}
 		var agent = caw(this.opts.proxy, {protocol: protocol});
-		var stream = got.stream(get.url, objectAssign(this.opts, {agent: agent}));
+		got.stream(get.url, objectAssign(this.opts, {agent: agent}))
+		.on('response', function (res) {
+			this.ware.run(res, get.url);
 
-		stream.on('response', function (res) {
-			stream.headers = res.headers;
-			stream.statusCode = res.statusCode;
-			this.ware.run(stream, get.url);
-		}.bind(this));
-
-		var hasHttpError = false;
-
-		readAllStream(stream, null, function (err, data) {
 			if (hasHttpError) {
 				return;
 			}
 
+			var dest = get.dest || this.dest();
+			var fileStream = this.createStream(this.createFile(get.url, res), dest);
+
+			fileStream.on('error', done);
+			fileStream.pipe(concatStream({encoding: 'object'}, function (items) {
+				files = files.concat(items);
+				done();
+			}));
+		}.bind(this))
+		.on('error', function (err) {
 			if (err) {
 				if (err instanceof got.HTTPError) {
 					hasHttpError = true;
@@ -146,16 +150,7 @@ Download.prototype.run = function (cb) {
 				done(err);
 				return;
 			}
-
-			var dest = get.dest || this.dest();
-			var fileStream = this.createStream(this.createFile(get.url, data), dest);
-
-			fileStream.on('error', done);
-			fileStream.pipe(concatStream({encoding: 'object'}, function (items) {
-				files = files.concat(items);
-				done();
-			}));
-		}.bind(this));
+		});
 	}.bind(this), function (err) {
 		if (err) {
 			cb(err);
